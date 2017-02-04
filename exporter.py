@@ -61,18 +61,7 @@ class Board(object):
         resp = self.session.get(
             further_url,
             headers={
-                "X-Request": "JSON",
                 "X-Requested-With": "XMLHttpRequest",
-                "Referer": "http://huaban.com/boards/18295004/",
-                "Accept": "application/json",
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_2) "
-                              "AppleWebKit/537.36 (KHTML, like Gecko) "
-                              "Chrome/55.0.2883.95 Safari/537.36",
-                "DNT": "1",
-                "Accept-Encoding": "gzip, deflate, sdch",
-                "Accept-Language": "zh-CN,zh;q=0.8",
-                "Pragma": "no-cache",
-
             }
         )
         content = resp.json()
