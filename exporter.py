@@ -4,6 +4,9 @@ import requests
 import cmdtree as cmd
 
 IMAGE_URL_TPL = "http://img.hb.aicdn.com/{file_key}"
+XHR_HEADERS = {
+    "X-Requested-With": "XMLHttpRequest",
+}
 
 
 class User(object):
@@ -17,14 +20,18 @@ class User(object):
         pass
 
 
-def get_pins(board_string):
-    board = json.loads(board_string)
+def get_pins(board_dict):
+    board = board_dict
     pins = []
     for info in board['pins']:
+        print info
         meta = {
             "pin_id": info['pin_id'],
             "url": IMAGE_URL_TPL.format(file_key=info['file']['key']),
-            'type': info['file']['type'][6:]
+            'type': info['file']['type'],
+            "title": info['raw_text'],
+            "link": info['link'],
+            "source": info['source'],
         }
         pins.append(meta)
     return pins
@@ -37,22 +44,31 @@ class Board(object):
         self.base_url = "http://huaban.com/boards/{board_id}/".format(
             board_id=self.board_id,
         )
-        self.pin_regex = re.compile(r'app\.page\["board"\]\s=\s(.*?);')
         self.further_pin_url_tpl = "http://huaban.com/boards/{board_id}/" \
                                "?iyqrlr0z" \
                                "&max={pin_id}" \
                                "&limit=20" \
                                "&wfl=1"
 
-    def fetch_home(self):
-        resp = self.session.get(self.base_url)
-        page_content = resp.content
+        # uninitialized properties
+        self.pin_count = None
+        self.title = None
+        self.description = None
+        self.pins = []
 
-        board_list = self.pin_regex.findall(page_content)
-        board_str = board_list[0]
-        return get_pins(board_str)
+    def _fetch_home(self):
+        resp = self.session.get(
+            self.base_url,
+            headers=XHR_HEADERS,
+        )
+        resp = resp.json()
+        board = resp['board']
+        self.pin_count = board['pin_count']
+        self.title = board['title']
+        self.description = board['description']
+        return get_pins(board)
 
-    def fetch_further(self, prev_pins):
+    def _fetch_further(self, prev_pins):
         max_id = prev_pins[-1]['pin_id']
         further_url = self.further_pin_url_tpl.format(
             board_id=self.board_id,
@@ -60,21 +76,24 @@ class Board(object):
         )
         resp = self.session.get(
             further_url,
-            headers={
-                "X-Requested-With": "XMLHttpRequest",
-            }
+            headers=XHR_HEADERS,
         )
         content = resp.json()
-        return get_pins(json.dumps(content['board']))
+        return get_pins(content['board'])
+
+    def get_pins(self):
+        self.pins.extend(self._fetch_home())
+        while self.pin_count > len(self.pins):
+            further_pins = self._fetch_further(self.pins)
+            self.pins.extend(further_pins)
+        return self.pins
 
 
 @cmd.argument("board_id", type=cmd.INT)
 @cmd.command("fetch-board")
 def fetch_board(board_id):
     board = Board(board_id)
-    pins = board.fetch_home()
-    print pins
-    print board.fetch_further(prev_pins=pins)
+    print board.get_pins()
 
 if __name__ == "__main__":
     # cmd.entry()
