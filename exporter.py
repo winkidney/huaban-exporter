@@ -1,34 +1,35 @@
 import json
-import re
+import logging
+import os
+import Queue
+from threading import Thread
+
 import requests
+from pprint import pprint
+from urlparse import urljoin
+
 import cmdtree as cmd
+from tqdm import tqdm
 
 IMAGE_URL_TPL = "http://img.hb.aicdn.com/{file_key}"
 XHR_HEADERS = {
     "X-Requested-With": "XMLHttpRequest",
+    "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; WOW64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/56.0.2924.87 Safari/537.36",
 }
-
-
-class User(object):
-    def __init__(self, user_uid):
-        self.uid = user_uid
-        self.user_home = "http://huaban.com/{user_uid}".format(
-            user_uid=self.uid,
-        )
-
-    def get_baords(self):
-        pass
 
 
 def get_pins(board_dict):
     board = board_dict
     pins = []
     for info in board['pins']:
-        print info
         meta = {
             "pin_id": info['pin_id'],
             "url": IMAGE_URL_TPL.format(file_key=info['file']['key']),
             'type': info['file']['type'],
+            'ext': info['file']['type'].split("/")[-1],
             "title": info['raw_text'],
             "link": info['link'],
             "source": info['source'],
@@ -36,19 +37,88 @@ def get_pins(board_dict):
         pins.append(meta)
     return pins
 
-    
-class Board(object):
-    def __init__(self, board_id):
+
+def get_boards(user_meta):
+    boards = []
+    for board in user_meta['boards']:
+        meta = {
+            "board_id": board['board_id'],
+            "title": board['title'],
+            "pins": None,
+        }
+        boards.append(meta)
+    return boards
+
+
+class User(object):
+    def __init__(self, user_url):
         self.session = requests.session()
-        self.board_id = board_id
-        self.base_url = "http://huaban.com/boards/{board_id}/".format(
-            board_id=self.board_id,
+        self.base_url = user_url
+        self.further_url_tpl = urljoin(
+            self.base_url,
+            "?iyyi5hr3"
+            "&max={board_id}"
+            "&limit=10"
+            "&wfl=1"
         )
-        self.further_pin_url_tpl = "http://huaban.com/boards/{board_id}/" \
-                               "?iyqrlr0z" \
-                               "&max={pin_id}" \
-                               "&limit=20" \
-                               "&wfl=1"
+
+        self.username = None
+        self.board_count = None
+        self.pin_count = None
+        self.boards = []
+
+    def _fetch_home(self):
+        resp = self.session.get(self.base_url, headers=XHR_HEADERS)
+        user_meta = resp.json()['user']
+        self.username = user_meta['username']
+        self.board_count = user_meta['board_count']
+        self.pin_count = user_meta['pin_count']
+        return get_boards(user_meta)
+
+    def _fetch_further(self, prev_boards):
+        max_id = prev_boards[-1]['board_id']
+        further_url = self.further_url_tpl.format(
+            board_id=max_id,
+        )
+        resp = self.session.get(
+            further_url,
+            headers=XHR_HEADERS,
+        )
+        content = resp.json()
+        return get_boards(content['user'])
+
+    def fetch_boards(self):
+        self.boards.extend(self._fetch_home())
+        while self.board_count > len(self.boards):
+            further_boards = self._fetch_further(self.boards)
+            self.boards.extend(further_boards)
+        return self.boards
+
+    def as_dict(self):
+        return {
+            "username": self.username,
+            "board_count": self.board_count,
+            "boards": self.boards
+        }
+
+
+class Board(object):
+    def __init__(self, board_url_or_id):
+        board_url_or_id = str(board_url_or_id)
+        self.session = requests.session()
+        if "http" in board_url_or_id:
+            self.base_url = board_url_or_id
+        else:
+            self.base_url = "http://huaban.com/boards/{board_id}/".format(
+                board_id=board_url_or_id
+            )
+        self.further_pin_url_tpl = urljoin(
+            self.base_url,
+            "?iyqrlr0z"
+            "&max={pin_id}"
+            "&limit=20"
+            "&wfl=1"
+        )
 
         # uninitialized properties
         self.pin_count = None
@@ -71,7 +141,6 @@ class Board(object):
     def _fetch_further(self, prev_pins):
         max_id = prev_pins[-1]['pin_id']
         further_url = self.further_pin_url_tpl.format(
-            board_id=self.board_id,
             pin_id=max_id,
         )
         resp = self.session.get(
@@ -81,20 +150,181 @@ class Board(object):
         content = resp.json()
         return get_pins(content['board'])
 
-    def get_pins(self):
+    def fetch_pins(self):
         self.pins.extend(self._fetch_home())
         while self.pin_count > len(self.pins):
             further_pins = self._fetch_further(self.pins)
             self.pins.extend(further_pins)
         return self.pins
 
+    def as_dict(self):
+        return {
+            "pins": self.pins,
+            "title": self.title,
+            "description": self.description,
+            "pin_count": self.pin_count,
+        }
 
-@cmd.argument("board_id", type=cmd.INT)
+
+class Pin(object):
+    def __init__(self, pin_meta, dir_to_save):
+        self.url = pin_meta["url"]
+        filename = "{title}.{ext}".format(
+            title=pin_meta['title'],
+            ext=pin_meta['ext'],
+        )
+        self.file_to_save = os.path.join(
+            dir_to_save,
+            filename,
+        )
+
+
+class HuaBan(object):
+    def __init__(self, user_url):
+        self.meta = None
+        self.base_url = user_url
+        self.user = User(user_url)
+        self.boards = []
+
+    def fetch_meta(self):
+        self.user.fetch_boards()
+        for meta in self.user.boards:
+            self.boards.append(Board(meta['board_id']))
+
+        for board in self.boards:
+            board.fetch_pins()
+
+    def as_dict(self):
+        meta = self.user.as_dict()
+        meta['boards'] = [
+            board.as_dict() for board in self.boards
+        ]
+        return meta
+
+    def save_meta(self, file_name):
+        meta = self.as_dict()
+        json.dump(meta, open(file_name, "wb"))
+
+
+class Worker(Thread):
+
+    def __init__(
+            self, queue, target
+    ):
+        """
+        :type queue: Queue.Queue
+        """
+        super(Worker, self).__init__(target=target)
+        self.task_func = target
+        self.queue = queue
+        self._stopped = False
+        self.worker_timeout = 20
+        self._stop_done = False
+        self.daemon = True
+
+    def run(self):
+        while True:
+            if self._stopped:
+                break
+            try:
+                task = self.queue.get(timeout=2)
+            except Queue.Empty:
+                pass
+            else:
+                self.task_func(*task)
+
+        self._stop_done = True
+
+    def stop(self):
+        self._stopped = True
+
+
+class Downloader(object):
+
+    def __init__(self, user_url, workers=5):
+        self.huaban = HuaBan(user_url)
+        self.huaban.fetch_meta()
+        self.root_dir = self.huaban.user.username.decode("utf-8")
+        self.progress_bar = tqdm(total=self.huaban.user.pin_count)
+        self.queue = Queue.Queue()
+        self.workers = tuple(
+            Worker(self.queue, self.download_one)
+            for x in xrange(workers)
+        )
+
+    def init_tasks(self):
+        if not os.path.exists(self.root_dir):
+            os.mkdir(self.root_dir)
+        for board in self.huaban.boards:
+            path = self.get_board_dir(board)
+            if not os.path.exists(path):
+                os.mkdir(path)
+            pins = board.pins
+            for pin in pins:
+                self.queue.put(
+                    (pin, path)
+                )
+
+    def download_one(self, pin, dir_to_save):
+        pin = Pin(pin, dir_to_save)
+        resp = requests.get(pin.url)
+        with open(pin.file_to_save, "wb") as f:
+            f.write(resp.content)
+        self.progress_bar.update(1)
+
+    def get_board_dir(self, board):
+        """
+        :type board: Board
+        """
+        return os.path.join(self.root_dir, board.title.decode("utf-8"))
+
+    def start(self):
+        for worker in self.workers:
+            worker.start()
+        self.queue.join()
+        for worker in self.workers:
+            worker.stop()
+        for worker in self.workers:
+            worker.join()
+
+
+def start_download(user_url):
+    print("Fetching meta data from huaban...")
+    downloader = Downloader(user_url)
+    print("Meta data downloaded")
+    downloader.init_tasks()
+    downloader.start()
+
+
+@cmd.argument("board-url")
 @cmd.command("fetch-board")
-def fetch_board(board_id):
-    board = Board(board_id)
-    print board.get_pins()
+def fetch_board(board_url):
+    board = Board(board_url)
+    pins = board.fetch_pins()
+    pprint(pins)
+
+
+@cmd.argument("user-url")
+@cmd.command("fetch-user")
+def fetch_user(user_url):
+    user = User(user_url)
+    boards = user.fetch_boards()
+    pprint(boards)
+
+
+@cmd.argument("user-url")
+@cmd.command("fetch-meta")
+def fetch_meta(user_url):
+    huaban = HuaBan(user_url)
+    huaban.fetch_meta()
+    pprint(huaban.as_dict())
+
+
+@cmd.argument("user-url")
+@cmd.command("download")
+def download(user_url):
+    start_download(user_url)
+
 
 if __name__ == "__main__":
-    # cmd.entry()
-    fetch_board(18295004)
+    cmd.entry()
