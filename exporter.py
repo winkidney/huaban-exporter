@@ -3,6 +3,7 @@ import logging
 import os
 import Queue
 from threading import Thread
+from time import sleep
 
 import requests
 from pprint import pprint
@@ -21,18 +22,29 @@ XHR_HEADERS = {
 }
 
 
+def _safe_file_name(file_name):
+    return file_name.replace("/", "_")
+
+
+def _get_file_ext(mime_type):
+    return mime_type.split("/")[-1]
+
+
 def get_pins(board_dict):
     board = board_dict
     pins = []
     for info in board['pins']:
+        ext = _get_file_ext(info['file']['type'])
+        file_name = "%s.%s" % (info['pin_id'], ext)
         meta = {
             "pin_id": info['pin_id'],
             "url": IMAGE_URL_TPL.format(file_key=info['file']['key']),
             'type': info['file']['type'],
-            'ext': info['file']['type'].split("/")[-1],
+            'ext': ext,
             "title": info['raw_text'],
             "link": info['link'],
             "source": info['source'],
+            "file_name": file_name
         }
         pins.append(meta)
     return pins
@@ -45,6 +57,7 @@ def get_boards(user_meta):
             "board_id": board['board_id'],
             "title": board['title'],
             "pins": None,
+            "dir_name": _safe_file_name(board['title']),
         }
         boards.append(meta)
     return boards
@@ -98,7 +111,7 @@ class User(object):
         return {
             "username": self.username,
             "board_count": self.board_count,
-            "boards": self.boards
+            "boards": self.boards,
         }
 
 
@@ -169,8 +182,8 @@ class Board(object):
 class Pin(object):
     def __init__(self, pin_meta, dir_to_save):
         self.url = pin_meta["url"]
-        filename = "{title}.{ext}".format(
-            title=pin_meta['title'],
+        filename = u"{title}.{ext}".format(
+            title=pin_meta['pin_id'],
             ext=pin_meta['ext'],
         )
         self.file_to_save = os.path.join(
@@ -186,12 +199,12 @@ class HuaBan(object):
         self.user = User(user_url)
         self.boards = []
 
-    def fetch_meta(self):
+    def fetch_meta(self, sleep_time=0.1):
         self.user.fetch_boards()
         for meta in self.user.boards:
             self.boards.append(Board(meta['board_id']))
-
         for board in self.boards:
+            sleep(sleep_time)
             board.fetch_pins()
 
     def as_dict(self):
@@ -214,26 +227,27 @@ class Worker(Thread):
         """
         :type queue: Queue.Queue
         """
-        super(Worker, self).__init__(target=target)
+        super(Worker, self).__init__()
         self.task_func = target
         self.queue = queue
-        self._stopped = False
-        self.worker_timeout = 20
-        self._stop_done = False
         self.daemon = True
+        self._stopped = False
 
     def run(self):
-        while True:
-            if self._stopped:
-                break
+        while not self._stopped:
             try:
                 task = self.queue.get(timeout=2)
             except Queue.Empty:
-                pass
+                break
             else:
-                self.task_func(*task)
-
-        self._stop_done = True
+                retries = 0
+                while retries < 3:
+                    try:
+                        self.task_func(*task)
+                        break
+                    except Exception:
+                        retries += 1
+                        continue
 
     def stop(self):
         self._stopped = True
@@ -244,8 +258,8 @@ class Downloader(object):
     def __init__(self, user_url, workers=5):
         self.huaban = HuaBan(user_url)
         self.huaban.fetch_meta()
-        self.root_dir = self.huaban.user.username.decode("utf-8")
-        self.progress_bar = tqdm(total=self.huaban.user.pin_count)
+        self.root_dir = _safe_file_name(self.huaban.user.username)
+        self.progress_bar = None
         self.queue = Queue.Queue()
         self.workers = tuple(
             Worker(self.queue, self.download_one)
@@ -255,6 +269,8 @@ class Downloader(object):
     def init_tasks(self):
         if not os.path.exists(self.root_dir):
             os.mkdir(self.root_dir)
+        meta_file = os.path.join(self.root_dir, "meta.json")
+        self.huaban.save_meta(meta_file)
         for board in self.huaban.boards:
             path = self.get_board_dir(board)
             if not os.path.exists(path):
@@ -276,24 +292,39 @@ class Downloader(object):
         """
         :type board: Board
         """
-        return os.path.join(self.root_dir, board.title.decode("utf-8"))
+        board_title = board.title.replace("/", "_")
+        return os.path.join(self.root_dir, board_title)
 
     def start(self):
+        self.progress_bar = tqdm(total=self.huaban.user.pin_count)
         for worker in self.workers:
             worker.start()
-        self.queue.join()
+
+    def stop(self):
         for worker in self.workers:
             worker.stop()
+
+    def join(self):
         for worker in self.workers:
             worker.join()
 
 
-def start_download(user_url):
+def start_download(user_url, workers):
     print("Fetching meta data from huaban...")
-    downloader = Downloader(user_url)
-    print("Meta data downloaded")
+    downloader = Downloader(user_url, workers=workers)
+    print("Meta data downloaded and saved in meta.json")
+    print("Downloading pins from HuaBan...")
     downloader.init_tasks()
     downloader.start()
+
+    while not downloader.queue.empty():
+        try:
+            sleep(1)
+        except KeyboardInterrupt:
+            print("User exit")
+            break
+    downloader.stop()
+    downloader.join()
 
 
 @cmd.argument("board-url")
@@ -321,9 +352,10 @@ def fetch_meta(user_url):
 
 
 @cmd.argument("user-url")
+@cmd.option("workers", type=cmd.INT, default=5, help="Number of download workers.")
 @cmd.command("download")
-def download(user_url):
-    start_download(user_url)
+def download(user_url, workers):
+    start_download(user_url, workers=workers)
 
 
 if __name__ == "__main__":
