@@ -9,7 +9,7 @@ install_requires = (
 
 setup(
     name='huaban-exporter',
-    version='0.0.1',
+    version='0.0.2',
     py_modules=["huaban_exporter"],
     install_requires=install_requires,
     url='https://github.com/winkidney/huaban-exporter',
