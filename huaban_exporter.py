@@ -3,6 +3,7 @@
 import json
 import os
 import Queue
+from functools import wraps
 from threading import Thread
 from time import sleep
 
@@ -62,6 +63,24 @@ def get_boards(user_meta):
         }
         boards.append(meta)
     return boards
+
+
+def retry(max_retries=3):
+
+    def wrapper(func):
+        @wraps(func)
+        def wrapped(*args, **kwargs):
+            retries = 0
+            while retries <= max_retries:
+                try:
+                    return func(*args, **kwargs)
+                except Exception:
+                    pass
+                retries += 1
+            return None
+        return wrapped
+
+    return wrapper
 
 
 class User(object):
@@ -160,6 +179,7 @@ class Board(object):
         resp = self.session.get(
             further_url,
             headers=XHR_HEADERS,
+            timeout=(2, 10),
         )
         content = resp.json()
         return get_pins(content['board'])
@@ -274,20 +294,15 @@ class Downloader(object):
     def download_one(self, session, pin, dir_to_save):
         import logging
         pin = Pin(pin, dir_to_save)
-        retries = 0
-        succeed = False
-        while retries <= 3:
-            try:
-                resp = session.get(pin.url, timeout=(2, 10))
-            except Exception:
-                pass
-            else:
-                with open(pin.file_to_save, "wb") as f:
-                    f.write(resp.content)
-                succeed = True
-                break
-            retries += 1
-        if not succeed:
+
+        @retry()
+        def do_get():
+            response = session.get(pin.url, timeout=(2, 10))
+            assert response.status_code == 200
+            return response
+
+        resp = do_get()
+        if resp.stat:
             logging.error("Failed to download image: %s" % pin.url)
         self.progress_bar.update(1)
 
@@ -307,9 +322,7 @@ class Downloader(object):
         for worker in self.workers:
             worker.start()
 
-        thread = Thread(target=self._fetch_boards_meta)
-        thread.setDaemon(True)
-        thread.start()
+        self._fetch_boards_meta()
 
     def _fetch_boards_meta(self):
         for board in self.huaban.boards:
