@@ -278,7 +278,7 @@ class Downloader(object):
         succeed = False
         while retries <= 3:
             try:
-                resp = session.get(pin.url, timeout=10)
+                resp = session.get(pin.url, timeout=(2, 10))
             except Exception:
                 pass
             else:
