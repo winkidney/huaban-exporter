@@ -236,6 +236,7 @@ class Worker(Thread):
         self.queue = queue
         self.daemon = True
         self._stopped = False
+        self.session = requests.session()
 
     def run(self):
         while not self._stopped:
@@ -247,7 +248,7 @@ class Worker(Thread):
                 retries = 0
                 while retries < 3:
                     try:
-                        self.task_func(*task)
+                        self.task_func(self.session, *task)
                         break
                     except Exception:
                         retries += 1
@@ -270,11 +271,24 @@ class Downloader(object):
             for x in xrange(workers)
         )
 
-    def download_one(self, pin, dir_to_save):
+    def download_one(self, session, pin, dir_to_save):
+        import logging
         pin = Pin(pin, dir_to_save)
-        resp = requests.get(pin.url)
-        with open(pin.file_to_save, "wb") as f:
-            f.write(resp.content)
+        retries = 0
+        succeed = False
+        while retries <= 3:
+            try:
+                resp = session.get(pin.url, timeout=10)
+            except Exception:
+                pass
+            else:
+                with open(pin.file_to_save, "wb") as f:
+                    f.write(resp.content)
+                succeed = True
+                break
+            retries += 1
+        if not succeed:
+            logging.error("Failed to download image: %s" % pin.url)
         self.progress_bar.update(1)
 
     def get_board_dir(self, board):
@@ -293,6 +307,11 @@ class Downloader(object):
         for worker in self.workers:
             worker.start()
 
+        thread = Thread(target=self._fetch_boards_meta)
+        thread.setDaemon(True)
+        thread.start()
+
+    def _fetch_boards_meta(self):
         for board in self.huaban.boards:
             path = self.get_board_dir(board)
             if not os.path.exists(path):
@@ -302,6 +321,7 @@ class Downloader(object):
                 self.queue.put(
                     (pin, path)
                 )
+        self.save()
 
     def save(self):
         meta_file = os.path.join(self.root_dir, "meta.json")
@@ -325,10 +345,11 @@ def start_download(user_url, workers):
 
     while not downloader.queue.empty():
         try:
-            sleep(1)
+            sleep(10)
         except KeyboardInterrupt:
             print("User exit")
             break
+    downloader.save()
     downloader.stop()
     downloader.join()
 
