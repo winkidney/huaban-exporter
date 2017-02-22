@@ -83,6 +83,11 @@ def retry(max_retries=3):
     return wrapper
 
 
+@retry()
+def do_request(session, method, *args, **kwargs):
+    return getattr(session, method)(*args, timeout=(2, 10), **kwargs)
+
+
 class User(object):
     def __init__(self, user_url):
         self.session = requests.session()
@@ -101,7 +106,7 @@ class User(object):
         self.boards = []
 
     def _fetch_home(self):
-        resp = self.session.get(self.base_url, headers=XHR_HEADERS)
+        resp = do_request(self.session, "get", self.base_url, headers=XHR_HEADERS)
         user_meta = resp.json()['user']
         self.username = user_meta['username']
         self.board_count = user_meta['board_count']
@@ -113,7 +118,9 @@ class User(object):
         further_url = self.further_url_tpl.format(
             board_id=max_id,
         )
-        resp = self.session.get(
+        resp = do_request(
+            self.session,
+            "get",
             further_url,
             headers=XHR_HEADERS,
         )
@@ -160,7 +167,9 @@ class Board(object):
         self.pins = []
 
     def _fetch_home(self):
-        resp = self.session.get(
+        resp = do_request(
+            self.session,
+            "get",
             self.base_url,
             headers=XHR_HEADERS,
         )
@@ -176,10 +185,12 @@ class Board(object):
         further_url = self.further_pin_url_tpl.format(
             pin_id=max_id,
         )
-        resp = self.session.get(
+
+        resp = do_request(
+            self.session,
+            "get",
             further_url,
             headers=XHR_HEADERS,
-            timeout=(2, 10),
         )
         content = resp.json()
         return get_pins(content['board'])
@@ -265,14 +276,7 @@ class Worker(Thread):
             except Queue.Empty:
                 break
             else:
-                retries = 0
-                while retries < 3:
-                    try:
-                        self.task_func(self.session, *task)
-                        break
-                    except Exception:
-                        retries += 1
-                        continue
+                self.task_func(self.session, *task)
 
     def stop(self):
         self._stopped = True
@@ -295,16 +299,13 @@ class Downloader(object):
         import logging
         pin = Pin(pin, dir_to_save)
 
-        @retry()
-        def do_get():
-            response = session.get(pin.url, timeout=(2, 10))
-            assert response.status_code == 200
-            return response
+        response = do_request(session, "get", pin.url)
 
-        resp = do_get()
-        if resp.stat:
+        if response is None:
             logging.error("Failed to download image: %s" % pin.url)
-        self.progress_bar.update(1)
+        with open(pin.file_to_save, "wb") as f:
+            f.write(response.content)
+            self.progress_bar.update(1)
 
     def get_board_dir(self, board):
         """
