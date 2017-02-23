@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 import json
+import logging
 import os
 import Queue
 from functools import wraps
@@ -71,12 +72,14 @@ def retry(max_retries=3):
         @wraps(func)
         def wrapped(*args, **kwargs):
             retries = 0
-            while retries <= max_retries:
+            while True:
+                retries += 1
                 try:
                     return func(*args, **kwargs)
                 except Exception:
-                    pass
-                retries += 1
+                    if retries > max_retries:
+                        logging.exception("Error occurs while execute function\n")
+                        break
             return None
         return wrapped
 
@@ -84,8 +87,12 @@ def retry(max_retries=3):
 
 
 @retry()
-def do_request(session, method, *args, **kwargs):
-    return getattr(session, method)(*args, timeout=(2, 10), **kwargs)
+def do_request(method, *args, **kwargs):
+    is_json = kwargs.pop('is_json', True)
+    response = getattr(requests, method)(*args, timeout=(2, 10), **kwargs)
+    if is_json:
+        response.json()
+    return response
 
 
 class User(object):
@@ -106,7 +113,7 @@ class User(object):
         self.boards = []
 
     def _fetch_home(self):
-        resp = do_request(self.session, "get", self.base_url, headers=XHR_HEADERS)
+        resp = do_request("get", self.base_url, headers=XHR_HEADERS)
         user_meta = resp.json()['user']
         self.username = user_meta['username']
         self.board_count = user_meta['board_count']
@@ -119,7 +126,6 @@ class User(object):
             board_id=max_id,
         )
         resp = do_request(
-            self.session,
             "get",
             further_url,
             headers=XHR_HEADERS,
@@ -168,7 +174,6 @@ class Board(object):
 
     def _fetch_home(self):
         resp = do_request(
-            self.session,
             "get",
             self.base_url,
             headers=XHR_HEADERS,
@@ -187,7 +192,6 @@ class Board(object):
         )
 
         resp = do_request(
-            self.session,
             "get",
             further_url,
             headers=XHR_HEADERS,
@@ -252,7 +256,7 @@ class HuaBan(object):
     def as_dict(self):
         meta = self.user.as_dict()
         meta['boards'] = [
-            board.as_dict() for board in self.boards
+            board.as_dict() for board in self._boards
         ]
         return meta
 
@@ -274,7 +278,6 @@ class Worker(Thread):
         self.queue = queue
         self.daemon = True
         self._stopped = False
-        self.session = requests.session()
 
     def run(self):
         while not self._stopped:
@@ -283,7 +286,7 @@ class Worker(Thread):
             except Queue.Empty:
                 break
             else:
-                self.task_func(self.session, *task)
+                self.task_func(*task)
 
     def stop(self):
         self._stopped = True
@@ -302,12 +305,10 @@ class Downloader(object):
             for x in xrange(workers)
         )
 
-    def download_one(self, session, pin, dir_to_save):
+    def download_one(self, pin, dir_to_save):
         import logging
         pin = Pin(pin, dir_to_save)
-
-        response = do_request(session, "get", pin.url)
-
+        response = do_request("get", pin.url, is_json=False)
         if response is None:
             logging.error("Failed to download image: %s" % pin.url)
         with open(pin.file_to_save, "wb") as f:
