@@ -359,7 +359,7 @@ class Downloader(object):
 def start_download(user_url, workers):
     print("Fetching initial meta data from huaban...")
     downloader = Downloader(user_url, workers=workers)
-    print("Downloading pins from HuaBan...")
+    print("Downloading pins from HuaBan with %s workers..." % workers)
     downloader.start()
 
     while not downloader.queue.empty():
