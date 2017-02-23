@@ -164,7 +164,7 @@ class Board(object):
         self.pin_count = None
         self.title = None
         self.description = None
-        self.pins = []
+        self._pins = []
 
     def _fetch_home(self):
         resp = do_request(
@@ -196,11 +196,18 @@ class Board(object):
         return get_pins(content['board'])
 
     def fetch_pins(self):
-        self.pins.extend(self._fetch_home())
-        while self.pin_count > len(self.pins):
-            further_pins = self._fetch_further(self.pins)
-            self.pins.extend(further_pins)
-        return self.pins
+        self._pins.extend(self._fetch_home())
+        yield self._pins
+        while self.pin_count > len(self._pins):
+            further_pins = self._fetch_further(self._pins)
+            self._pins.extend(further_pins)
+            yield further_pins
+
+    @property
+    def pins(self):
+        for pin_group in self.fetch_pins():
+            for pin in pin_group:
+                yield pin
 
     def as_dict(self):
         return {
@@ -237,10 +244,10 @@ class HuaBan(object):
             self._boards.append(Board(meta['board_id']))
 
     @property
-    def boards(self):
+    def boards_pins(self):
         for board in self._boards:
-            board.fetch_pins()
-            yield board
+            for pin in board.pins:
+                yield board, pin
 
     def as_dict(self):
         meta = self.user.as_dict()
@@ -326,15 +333,13 @@ class Downloader(object):
         self._fetch_boards_meta()
 
     def _fetch_boards_meta(self):
-        for board in self.huaban.boards:
+        for board, pin in self.huaban.boards_pins:
             path = self.get_board_dir(board)
             if not os.path.exists(path):
                 os.mkdir(path)
-            pins = board.pins
-            for pin in pins:
-                self.queue.put(
-                    (pin, path)
-                )
+            self.queue.put(
+                (pin, path)
+            )
         self.save()
 
     def save(self):
@@ -351,9 +356,8 @@ class Downloader(object):
 
 
 def start_download(user_url, workers):
-    print("Fetching meta data from huaban...")
+    print("Fetching initial meta data from huaban...")
     downloader = Downloader(user_url, workers=workers)
-    print("Meta data downloaded and saved in meta.json")
     print("Downloading pins from HuaBan...")
     downloader.start()
 
@@ -364,6 +368,7 @@ def start_download(user_url, workers):
             print("User exit")
             break
     downloader.save()
+    print("Meta data download completed and saved in meta.json")
     downloader.stop()
     downloader.join()
 
