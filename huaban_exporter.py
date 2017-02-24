@@ -4,9 +4,9 @@ import json
 import logging
 import os
 import Queue
+import random
 import string
 from functools import wraps
-from random import random
 from threading import Thread
 from time import sleep
 
