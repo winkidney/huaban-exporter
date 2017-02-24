@@ -4,7 +4,9 @@ import json
 import logging
 import os
 import Queue
+import string
 from functools import wraps
+from random import random
 from threading import Thread
 from time import sleep
 
@@ -15,6 +17,9 @@ from urlparse import urljoin
 import cmdtree as cmd
 from tqdm import tqdm
 
+_DEBUG = False
+
+
 IMAGE_URL_TPL = "http://img.hb.aicdn.com/{file_key}"
 XHR_HEADERS = {
     "X-Requested-With": "XMLHttpRequest",
@@ -23,6 +28,13 @@ XHR_HEADERS = {
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/56.0.2924.87 Safari/537.36",
 }
+
+
+def _random_string(length):
+    return ''.join(
+        random.choice(string.ascii_lowercase + string.digits)
+        for _ in range(length)
+    )
 
 
 def _safe_file_name(file_name):
@@ -91,7 +103,10 @@ def do_request(method, *args, **kwargs):
     is_json = kwargs.pop('is_json', True)
     response = getattr(requests, method)(*args, timeout=(2, 10), **kwargs)
     if is_json:
-        response.json()
+        data = response.json()
+        if _DEBUG:
+            pprint(args)
+            pprint(data)
     return response
 
 
@@ -101,7 +116,7 @@ class User(object):
         self.base_url = user_url
         self.further_url_tpl = urljoin(
             self.base_url,
-            "?iyyi5hr3"
+            "?{random_str}"
             "&max={board_id}"
             "&limit=10"
             "&wfl=1"
@@ -123,6 +138,7 @@ class User(object):
     def _fetch_further(self, prev_boards):
         max_id = prev_boards[-1]['board_id']
         further_url = self.further_url_tpl.format(
+            random_str=_random_string(8),
             board_id=max_id,
         )
         resp = do_request(
@@ -400,8 +416,11 @@ def fetch_meta(user_url):
 
 @cmd.argument("user-url")
 @cmd.option("workers", type=cmd.INT, default=5, help="Number of download workers.")
+@cmd.option("debug", is_flag=True, default=False)
 @cmd.command("download")
-def download(user_url, workers):
+def download(user_url, workers, debug):
+    global _DEBUG
+    _DEBUG = debug
     start_download(user_url, workers=workers)
 
 
