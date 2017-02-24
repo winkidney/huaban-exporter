@@ -215,7 +215,7 @@ class Board(object):
 
     def as_dict(self):
         return {
-            "pins": self.pins,
+            "pins": self._pins,
             "title": self.title,
             "description": self.description,
             "pin_count": self.pin_count,
