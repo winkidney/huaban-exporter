@@ -72,6 +72,7 @@ def get_boards(user_meta):
             "board_id": board['board_id'],
             "title": board['title'],
             "pins": None,
+            "pin_count": board['pin_count'],
             "dir_name": _safe_file_name(board['title']),
         }
         boards.append(meta)
@@ -84,7 +85,7 @@ def retry(max_retries=3):
         @wraps(func)
         def wrapped(*args, **kwargs):
             retries = 0
-            while True:
+            while retries <= max_retries:
                 retries += 1
                 try:
                     return func(*args, **kwargs)
@@ -103,10 +104,9 @@ def do_request(method, *args, **kwargs):
     is_json = kwargs.pop('is_json', True)
     response = getattr(requests, method)(*args, timeout=(2, 10), **kwargs)
     if is_json:
-        data = response.json()
+        response.json()
         if _DEBUG:
-            pprint(args)
-            pprint(data)
+            print("%s %s" % (method, str(args)))
     return response
 
 
@@ -125,7 +125,7 @@ class User(object):
         self.username = None
         self.board_count = None
         self.pin_count = None
-        self.boards = []
+        self._boards = []
 
     def _fetch_home(self):
         resp = do_request("get", self.base_url, headers=XHR_HEADERS)
@@ -149,12 +149,18 @@ class User(object):
         content = resp.json()
         return get_boards(content['user'])
 
-    def fetch_boards(self):
-        self.boards.extend(self._fetch_home())
-        while self.board_count > len(self.boards):
+    def _fetch_boards(self):
+        self._boards.extend(self._fetch_home())
+        while self.board_count > len(self._boards):
             further_boards = self._fetch_further(self.boards)
-            self.boards.extend(further_boards)
-        return self.boards
+            self._boards.extend(further_boards)
+        return self._boards
+
+    @property
+    def boards(self):
+        if not self._boards:
+            self._fetch_boards()
+        return self._boards
 
     def as_dict(self):
         return {
@@ -176,7 +182,7 @@ class Board(object):
             )
         self.further_pin_url_tpl = urljoin(
             self.base_url,
-            "?iyqrlr0z"
+            "?{random_string}"
             "&max={pin_id}"
             "&limit=20"
             "&wfl=1"
@@ -205,6 +211,7 @@ class Board(object):
         max_id = prev_pins[-1]['pin_id']
         further_url = self.further_pin_url_tpl.format(
             pin_id=max_id,
+            random_string=_random_string(8),
         )
 
         resp = do_request(
@@ -220,6 +227,8 @@ class Board(object):
         yield self._pins
         while self.pin_count > len(self._pins):
             further_pins = self._fetch_further(self._pins)
+            if len(further_pins) <= 0:
+                break
             self._pins.extend(further_pins)
             yield further_pins
 
@@ -257,10 +266,11 @@ class HuaBan(object):
         self.base_url = user_url
         self.user = User(user_url)
         self._boards = []
+        self.parsed_pin_count = 0
 
-    def fetch_meta(self, sleep_time=0.1):
-        self.user.fetch_boards()
-        for meta in self.user.boards:
+    def fetch_initial_meta(self):
+        boards = self.user.boards
+        for meta in boards:
             self._boards.append(Board(meta['board_id']))
 
     @property
@@ -312,7 +322,7 @@ class Downloader(object):
 
     def __init__(self, user_url, workers=5):
         self.huaban = HuaBan(user_url)
-        self.huaban.fetch_meta()
+        self.huaban.fetch_initial_meta()
         self.root_dir = _safe_file_name(self.huaban.user.username)
         self.progress_bar = None
         self.queue = Queue.Queue()
@@ -394,24 +404,30 @@ def start_download(user_url, workers):
 @cmd.command("fetch-board")
 def fetch_board(board_url):
     board = Board(board_url)
-    pins = board.fetch_pins()
+    pins = list(board.pins)
     pprint(pins)
+    pprint("pin_length is %s, pin_count is %s" % (len(pins), board.pin_count))
 
 
 @cmd.argument("user-url")
 @cmd.command("fetch-user")
 def fetch_user(user_url):
     user = User(user_url)
-    boards = user.fetch_boards()
+    boards = list(user.boards)
     pprint(boards)
 
 
 @cmd.argument("user-url")
+@cmd.option("debug", is_flag=True, default=False)
 @cmd.command("fetch-meta")
-def fetch_meta(user_url):
+def fetch_meta(user_url, debug):
+    global _DEBUG
+    _DEBUG = debug
     huaban = HuaBan(user_url)
-    huaban.fetch_meta()
+    huaban.fetch_initial_meta()
+    board_pins = list(huaban.boards_pins)
     pprint(huaban.as_dict())
+    pprint("pins length is %s" % len(board_pins))
 
 
 @cmd.argument("user-url")
