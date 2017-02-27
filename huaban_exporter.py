@@ -387,6 +387,8 @@ def start_download(user_url, workers):
     downloader = Downloader(user_url, workers=workers)
     print("Downloading pins from HuaBan with %s workers..." % workers)
     downloader.start()
+    downloader.save()
+    print("Meta data download completed and saved in meta.json")
 
     while not downloader.queue.empty():
         try:
@@ -394,8 +396,7 @@ def start_download(user_url, workers):
         except KeyboardInterrupt:
             print("User exit")
             break
-    downloader.save()
-    print("Meta data download completed and saved in meta.json")
+
     downloader.stop()
     downloader.join()
 
