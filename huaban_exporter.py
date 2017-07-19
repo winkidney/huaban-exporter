@@ -93,6 +93,7 @@ def retry(max_retries=3):
                     if retries > max_retries:
                         logging.exception("Error occurs while execute function\n")
                         break
+                    sleep(1)
             return None
         return wrapped
 
@@ -337,6 +338,7 @@ class Downloader(object):
         response = do_request("get", pin.url, is_json=False)
         if response is None:
             logging.error("Failed to download image: %s" % pin.url)
+            return
         with open(pin.file_to_save, "wb") as f:
             f.write(response.content)
             self.progress_bar.update(1)
